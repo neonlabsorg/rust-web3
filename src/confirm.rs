@@ -6,7 +6,7 @@ use crate::{
     types::{Bytes, TransactionReceipt, TransactionRequest, H256, U64},
     Transport,
 };
-use futures::{Future, StreamExt};
+use futures::{Future};
 use std::time::Duration;
 
 /// Checks whether an event has been confirmed.
@@ -33,8 +33,8 @@ where
 /// Should be used to wait for confirmations
 pub async fn wait_for_confirmations<T, V, F>(
     eth: Eth<T>,
-    eth_filter: EthFilter<T>,
-    poll_interval: Duration,
+    _eth_filter: EthFilter<T>,
+    _poll_interval: Duration,
     confirmations: usize,
     check: V,
 ) -> error::Result<()>
@@ -43,23 +43,15 @@ where
     V: ConfirmationCheck<Check = F>,
     F: Future<Output = error::Result<Option<U64>>>,
 {
-    let filter = eth_filter.create_blocks_filter().await?;
-    // TODO #396: The stream should have additional checks.
-    // * We should not continue calling next on a stream that has completed (has returned None). We expect this to never
-    //   happen for the blocks filter but to be safe we should handle this case for example by `fuse`ing the stream or
-    //   erroring when it does complete.
-    // * We do not handle the case where the stream returns an error which means we are wrongly counting it as a
-    //   confirmation.
-    let filter_stream = filter.stream(poll_interval).skip(confirmations);
-    futures::pin_mut!(filter_stream);
+    let delay: Duration = Duration::from_millis(1000);
     loop {
-        let _ = filter_stream.next().await;
         if let Some(confirmation_block_number) = check.check().await? {
             let block_number = eth.block_number().await?;
             if confirmation_block_number.low_u64() + confirmations as u64 <= block_number.low_u64() {
                 return Ok(());
             }
         }
+        tokio::time::sleep(delay).await;
     }
 }
 
