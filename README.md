@@ -12,13 +12,18 @@ Rust implementation of Web3.js library.
 
 Documentation: [crates.io][docs-rs-url]
 
+## Status
+
+Note this package is **barely maintained** and I am looking for an active maintainer (see #664).
+If you are starting a new project, I'd recommend choosing https://github.com/gakonst/ethers-rs instead.
+
 ## Usage
 
 First, add this to your `Cargo.toml`:
 
 ```toml
 [dependencies]
-web3 = "0.15.0"
+web3 = "0.19.0"
 ```
 
 ## Example
@@ -51,19 +56,13 @@ The solidity compiler is generating the binary and abi code for the smart contra
 
 For more see [examples folder](./examples).
 
-# Opt-out Features
-- `http` - Enables HTTP transport (requires `tokio` runtime, because of `hyper`).
-- `http-tls` - Enables TLS support for HTTP transport (implies `http`).
-- `ws` - Enables WS transport.
-- `ws-tls` - Enables TLS support for WS transport (implies `ws`).
-
 ## Futures migration
 - [ ] Get rid of parking_lot (replace with async-aware locks if really needed).
 - [ ] Consider getting rid of `Unpin` requirements. (#361)
 - [x] WebSockets: TLS support (#360)
 - [ ] WebSockets: Reconnecting & Pings
 - [x] Consider using `tokio` instead of `async-std` for `ws.rs` transport (issue with test).
-- [ ] Restore IPC Transport
+- [x] Restore IPC Transport
 
 ## General
 - [ ] More flexible API (accept `Into<X>`)
@@ -109,28 +108,37 @@ web3.api::<CustomNamespace>().custom_method().wait().unwrap()
 
 Currently, Windows does not support IPC, which is enabled in the library by default.
 To compile, you need to disable the IPC feature:
-```
-web3 = { version = "0.14.0", default-features = false, features = ["http"] }
+```toml
+web3 = { version = "_", default-features = false, features = ["http"] }
 ```
 
 # Avoiding OpenSSL dependency
 
 On Linux, `native-tls` is implemented using OpenSSL. To avoid that dependency
-for HTTPS use the corresponding feature.
+for HTTPS or WSS use the corresponding features.
+```toml
+web3 = { version = "_", default-features = false, features = ["http-rustls-tls", "ws-rustls-tokio"] }
 ```
-web3 = { version = "0.14.0", default-features = false, features = ["http-rustls"] }
-```
+
+_Note: To fully replicate the default features also add `signing` & `ipc-tokio` features_.
 
 # Cargo Features
 
 The library supports following features:
-- `http` - Enables `http` transport.
-- `http-tls` - Enables `http` over TLS (`https`) transport support using OS-native TLS. Implies `http`.
-- `http-rustls` - Enables `http` over TLS (`https`) transport support using rustls. Implies `http`.
-- `ipc-tokio` - Enables `ipc` transport (`tokio` runtime). *NIX only!
-- `ws-tokio` - Enables `ws` tranport (`tokio` runtime).
-- `ws-tls-tokio` - Enables `wss` tranport (`tokio` runtime).
-- `ws-async-std` - Enables `ws` tranport (`async-std` runtime).
-- `ws-tls-async-std` - Enables `wss` tranport (`async-std` runtime).
-
-By default `http-tls` and `ws-tls-tokio` are enabled.
+- `http` - Enables HTTP transport (requires `tokio` runtime, because of `hyper`).
+- `http-tls` - Enables TLS support via `reqwest/default-tls` for HTTP transport (implies `http`; default).
+- `http-native-tls` - Enables TLS support via `reqwest/native-tls` for HTTP transport (implies `http`).
+- `http-rustls-tls` - Enables TLS support via `reqwest/rustls-tls` for HTTP transport (implies `http`).
+- `ws-tokio` - Enables WS transport using `tokio` runtime.
+- `ws-tls-tokio` - Enables TLS support for WS transport (implies `ws-tokio`; default).
+- `ws-rustls-tokio` - Enables rustls TLS support for WS transport (implies `ws-tokio`).
+- `ws-async-std` - Enables WS transport using `async-std` runtime.
+- `ws-tls-async-std` - Enables TLS support for WS transport (implies `ws-async-std`).
+- `ipc-tokio` - Enables IPC transport using `tokio` runtime (default).
+- `signing` - Enable account namespace and local-signing support (default).
+- `eip-1193` - Enable EIP-1193 support.
+- `wasm` - Compile for WASM (make sure to disable default features).
+- `arbitrary_precision` - Enable `arbitrary_precision` in `serde_json`.
+- `allow-missing-fields` - Some response fields are mandatory in Ethereum but not present in
+  EVM-compatible chains such as Celo and Fantom. This feature enables compatibility by setting a
+  default value on those fields.

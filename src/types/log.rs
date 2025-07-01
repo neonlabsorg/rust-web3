@@ -137,6 +137,14 @@ impl FilterBuilder {
     }
 
     /// Topics
+    /// An event topic is a part of the event logging mechanism used by smart contracts
+    /// to record information on the blockchain.
+    /// These logs are stored in transaction receipts and can be efficiently filtered and searched.
+    /// Each log entry has -up to- four "topics," which are 32-byte values used to index the log.
+    ///    Topic 0: The hash of the event signature.
+    ///    Topic 1: The from address (indexed).
+    ///    Topic 2: The to address (indexed).
+    ///    Data: The value (not indexed).
     pub fn topics(
         mut self,
         topic1: Option<Vec<H256>>,
@@ -210,7 +218,7 @@ mod tests {
             log_type: None,
             removed: Some(true),
         };
-        assert_eq!(true, log.is_removed());
+        assert!(log.is_removed());
     }
 
     #[test]
@@ -228,7 +236,7 @@ mod tests {
             log_type: None,
             removed: Some(false),
         };
-        assert_eq!(false, log.is_removed());
+        assert!(!log.is_removed());
     }
 
     #[test]
@@ -246,7 +254,7 @@ mod tests {
             log_type: Some("removed".into()),
             removed: None,
         };
-        assert_eq!(true, log.is_removed());
+        assert!(log.is_removed());
     }
 
     #[test]
@@ -264,7 +272,7 @@ mod tests {
             log_type: Some("mined".into()),
             removed: None,
         };
-        assert_eq!(false, log.is_removed());
+        assert!(!log.is_removed());
     }
 
     #[test]
@@ -282,7 +290,7 @@ mod tests {
             log_type: None,
             removed: None,
         };
-        assert_eq!(false, log.is_removed());
+        assert!(!log.is_removed());
     }
 
     #[test]

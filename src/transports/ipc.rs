@@ -1,6 +1,9 @@
 //! IPC transport
 
-use crate::{api::SubscriptionId, helpers, BatchTransport, DuplexTransport, Error, RequestId, Result, Transport};
+use crate::{
+    api::SubscriptionId, error::TransportError, helpers, BatchTransport, DuplexTransport, Error, RequestId, Result,
+    Transport,
+};
 use futures::{
     future::{join_all, JoinAll},
     stream::StreamExt,
@@ -15,11 +18,13 @@ use std::{
 };
 use tokio::{
     io::AsyncWriteExt,
-    net::UnixStream,
     sync::{mpsc, oneshot},
 };
 use tokio_stream::wrappers::UnboundedReceiverStream;
 use tokio_util::io::ReaderStream;
+
+#[cfg(unix)]
+use tokio::net::UnixStream;
 
 /// Unix Domain Sockets (IPC) transport.
 #[derive(Debug, Clone)]
@@ -168,17 +173,17 @@ async fn run_server(unix_stream: UnixStream, messages_rx: UnboundedReceiverStrea
     let mut read_buffer = vec![];
     let mut closed = false;
 
-    while !closed || pending_response_txs.len() > 0 {
+    while !closed || !pending_response_txs.is_empty() {
         tokio::select! {
             message = messages_rx.next() => match message {
                 None => closed = true,
                 Some(TransportMessage::Subscribe(id, tx)) => {
-                    if let Some(_) = subscription_txs.insert(id.clone(), tx) {
+                    if subscription_txs.insert(id.clone(), tx).is_some() {
                         log::warn!("Replacing a subscription with id {:?}", id);
                     }
                 },
                 Some(TransportMessage::Unsubscribe(id)) => {
-                    if let None = subscription_txs.remove(&id) {
+                    if subscription_txs.remove(&id).is_none() {
                         log::warn!("Unsubscribing not subscribed id {:?}", id);
                     }
                 },
@@ -188,7 +193,7 @@ async fn run_server(unix_stream: UnixStream, messages_rx: UnboundedReceiverStrea
                     }
 
                     let bytes = helpers::to_string(&rpc::Request::Single(rpc_call)).into_bytes();
-                    if let Err(err) = socket_writer.write(&bytes).await {
+                    if let Err(err) = socket_writer.write_all(&bytes).await {
                         pending_response_txs.remove(&request_id);
                         log::error!("IPC write error: {:?}", err);
                     }
@@ -208,7 +213,7 @@ async fn run_server(unix_stream: UnixStream, messages_rx: UnboundedReceiverStrea
 
                     let bytes = helpers::to_string(&rpc::Request::Batch(rpc_calls)).into_bytes();
 
-                    if let Err(err) = socket_writer.write(&bytes).await {
+                    if let Err(err) = socket_writer.write_all(&bytes).await {
                         log::error!("IPC write error: {:?}", err);
                         for request_id in request_ids {
                             pending_response_txs.remove(&request_id);
@@ -322,13 +327,13 @@ fn respond_output(
 
 impl From<mpsc::error::SendError<TransportMessage>> for Error {
     fn from(err: mpsc::error::SendError<TransportMessage>) -> Self {
-        Error::Transport(format!("Send Error: {:?}", err))
+        Error::Transport(TransportError::Message(format!("Send Error: {:?}", err)))
     }
 }
 
 impl From<oneshot::error::RecvError> for Error {
     fn from(err: oneshot::error::RecvError) -> Self {
-        Error::Transport(format!("Recv Error: {:?}", err))
+        Error::Transport(TransportError::Message(format!("Recv Error: {:?}", err)))
     }
 }
 
@@ -389,7 +394,7 @@ mod test {
                 })
             );
 
-            tx.write(r#"{"jsonrpc": "2.0", "id": 1, "result": {"test": 1}}"#.as_ref())
+            tx.write_all(r#"{"jsonrpc": "2.0", "id": 1, "result": {"test": 1}}"#.as_ref())
                 .await
                 .unwrap();
             tx.flush().await.unwrap();
@@ -412,7 +417,7 @@ mod test {
 
             let response_bytes = r#"{"jsonrpc": "2.0", "id": 2, "result": {"test": "string1"}}"#;
             for chunk in response_bytes.as_bytes().chunks(3) {
-                tx.write(chunk).await.unwrap();
+                tx.write_all(chunk).await.unwrap();
                 tx.flush().await.unwrap();
             }
         }

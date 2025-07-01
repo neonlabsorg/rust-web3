@@ -1,7 +1,11 @@
 //! WebSocket Transport
 
 use self::compat::{TcpStream, TlsStream};
-use crate::{api::SubscriptionId, error, helpers, rpc, BatchTransport, DuplexTransport, Error, RequestId, Transport};
+use crate::{
+    api::SubscriptionId,
+    error::{self, TransportError},
+    helpers, rpc, BatchTransport, DuplexTransport, Error, RequestId, Transport,
+};
 use futures::{
     channel::{mpsc, oneshot},
     task::{Context, Poll},
@@ -22,13 +26,13 @@ use url::Url;
 
 impl From<soketto::handshake::Error> for Error {
     fn from(err: soketto::handshake::Error) -> Self {
-        Error::Transport(format!("Handshake Error: {:?}", err))
+        Error::Transport(TransportError::Message(format!("Handshake Error: {:?}", err)))
     }
 }
 
 impl From<connection::Error> for Error {
     fn from(err: connection::Error) -> Self {
-        Error::Transport(format!("Connection Error: {:?}", err))
+        Error::Transport(TransportError::Message(format!("Connection Error: {:?}", err)))
     }
 }
 
@@ -100,15 +104,28 @@ impl WsServerTask {
 
         let scheme = match url.scheme() {
             s if s == "ws" || s == "wss" => s,
-            s => return Err(error::Error::Transport(format!("Wrong scheme: {}", s))),
+            s => {
+                return Err(error::Error::Transport(TransportError::Message(format!(
+                    "Wrong scheme: {}",
+                    s
+                ))))
+            }
         };
+
         let host = match url.host_str() {
             Some(s) => s,
-            None => return Err(error::Error::Transport("Wrong host name".to_string())),
+            None => {
+                return Err(error::Error::Transport(TransportError::Message(
+                    "Wrong host name".to_string(),
+                )))
+            }
         };
+
         let port = url.port().unwrap_or(if scheme == "ws" { 80 } else { 443 });
+
         let addrs = format!("{}:{}", host, port);
 
+        log::trace!("Connecting TcpStream with address: {}", addrs);
         let stream = compat::raw_tcp_stream(addrs).await?;
         stream.set_nodelay(true)?;
         let socket = if scheme == "wss" {
@@ -117,28 +134,60 @@ impl WsServerTask {
                 let stream = async_native_tls::connect(host, stream).await?;
                 MaybeTlsStream::Tls(compat::compat(stream))
             }
-            #[cfg(not(any(feature = "ws-tls-tokio", feature = "ws-tls-async-std")))]
-            panic!("The library was compiled without TLS support. Enable ws-tls-tokio or ws-tls-async-std feature.");
+            #[cfg(all(
+                feature = "ws-rustls-tokio",
+                not(feature = "ws-tls-tokio"),
+                not(feature = "ws-tls-async-std")
+            ))]
+            {
+                let stream = tokio_rustls_connect(host, stream).await?;
+                MaybeTlsStream::Tls(compat::compat(stream))
+            }
+            #[cfg(not(any(feature = "ws-tls-tokio", feature = "ws-tls-async-std", feature = "ws-rustls-tokio")))]
+            panic!("The library was compiled without TLS support. Enable ws-tls-tokio, ws-rustls-tokio or ws-tls-async-std feature.");
         } else {
             let stream = compat::compat(stream);
             MaybeTlsStream::Plain(stream)
         };
 
-        let mut client = Client::new(socket, host, url.path());
+        let resource = match url.query() {
+            Some(q) => format!("{}?{}", url.path(), q),
+            None => url.path().to_owned(),
+        };
+
+        log::trace!(
+            "Connecting websocket client with host: {} and resource: {}",
+            host,
+            resource
+        );
+        let mut client = Client::new(socket, host, &resource);
+        let maybe_encoded = url.password().map(|password| {
+            use headers::authorization::{Authorization, Credentials};
+            Authorization::basic(url.username(), password)
+                .0
+                .encode()
+                .as_bytes()
+                .to_vec()
+        });
+
+        let headers = maybe_encoded.as_ref().map(|head| {
+            [soketto::handshake::client::Header {
+                name: "Authorization",
+                value: head,
+            }]
+        });
+
+        if let Some(ref head) = headers {
+            client.set_headers(head);
+        }
         let handshake = client.handshake();
         let (sender, receiver) = match handshake.await? {
             ServerResponse::Accepted { .. } => client.into_builder().finish(),
-            ServerResponse::Redirect { status_code, location } => {
-                return Err(error::Error::Transport(format!(
-                    "(code: {}) Unable to follow redirects: {}",
-                    status_code, location
-                )))
+            ServerResponse::Redirect { status_code, .. } => {
+                return Err(error::Error::Transport(TransportError::Code(status_code)))
             }
             ServerResponse::Rejected { status_code } => {
-                return Err(error::Error::Transport(format!(
-                    "(code: {}) Connection rejected.",
-                    status_code
-                )))
+                return Err(error::Error::Transport(TransportError::Code(status_code)))
             }
         };
 
@@ -203,6 +252,32 @@ impl WsServerTask {
             }
         }
     }
+}
+
+#[cfg(feature = "ws-rustls-tokio")]
+async fn tokio_rustls_connect(
+    host: &str,
+    stream: tokio::net::TcpStream,
+) -> error::Result<tokio_rustls::client::TlsStream<tokio::net::TcpStream>> {
+    use rustls_pki_types::ServerName;
+    use std::convert::TryFrom;
+    use tokio_rustls::rustls::{ClientConfig, RootCertStore};
+
+    let client_conf = ClientConfig::builder()
+        .with_root_certificates({
+            let mut root_cert_store = RootCertStore::empty();
+            root_cert_store.extend(webpki_roots::TLS_SERVER_ROOTS.iter().cloned());
+            root_cert_store
+        })
+        .with_no_client_auth();
+
+    let dnsname = ServerName::try_from(host)
+        .map_err(|err| error::Error::Transport(TransportError::Message(format!("Invalid host: {err}"))))?
+        .to_owned();
+
+    Ok(tokio_rustls::TlsConnector::from(Arc::new(client_conf))
+        .connect(dnsname, stream)
+        .await?)
 }
 
 fn as_data_stream<T: Unpin + futures::AsyncRead + futures::AsyncWrite>(
@@ -328,7 +403,9 @@ impl WebSocket {
 }
 
 fn dropped_err<T>(_: T) -> error::Error {
-    Error::Transport("Cannot send request. Internal task finished.".into())
+    Error::Transport(TransportError::Message(
+        "Cannot send request. Internal task finished.".into(),
+    ))
 }
 
 fn batch_to_single(response: BatchResult) -> SingleResult {
@@ -347,7 +424,7 @@ enum ResponseState {
     Waiting(oneshot::Receiver<BatchResult>),
 }
 
-/// A WS resonse wrapper.
+/// A WS response wrapper.
 pub struct Response<R, T> {
     extract: T,
     state: ResponseState,
@@ -470,13 +547,16 @@ pub mod compat {
     /// TLS stream type for tokio runtime.
     #[cfg(feature = "ws-tls-tokio")]
     pub type TlsStream = Compat<async_native_tls::TlsStream<tokio::net::TcpStream>>;
+    /// Rustls TLS stream type for tokio runtime.
+    #[cfg(all(feature = "ws-rustls-tokio", not(feature = "ws-tls-tokio")))]
+    pub type TlsStream = Compat<tokio_rustls::client::TlsStream<tokio::net::TcpStream>>;
     /// Dummy TLS stream type.
-    #[cfg(not(feature = "ws-tls-tokio"))]
+    #[cfg(all(not(feature = "ws-tls-tokio"), not(feature = "ws-rustls-tokio")))]
     pub type TlsStream = TcpStream;
 
     /// Create new TcpStream object.
     pub async fn raw_tcp_stream(addrs: String) -> io::Result<tokio::net::TcpStream> {
-        Ok(tokio::net::TcpStream::connect(addrs).await?)
+        tokio::net::TcpStream::connect(addrs).await
     }
 
     /// Wrap given argument into compatibility layer.
@@ -531,12 +611,9 @@ mod tests {
             let mut server = handshake::Server::new(BufReader::new(BufWriter::new(socket)));
             let key = {
                 let req = server.receive_request().await.unwrap();
-                req.into_key()
+                req.key()
             };
-            let accept = handshake::server::Response::Accept {
-                key: &key,
-                protocol: None,
-            };
+            let accept = handshake::server::Response::Accept { key, protocol: None };
             server.send_response(&accept).await.unwrap();
             let (mut sender, mut receiver) = server.into_builder().finish();
             loop {

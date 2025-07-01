@@ -389,7 +389,7 @@ macro_rules! impl_fixed_types {
                             )));
                         }
 
-                        let mut arr = ArrayVec::<[T; $num]>::new();
+                        let mut arr = ArrayVec::<T, $num>::new();
                         let mut it = tokens.into_iter().map(T::from_token);
                         for _ in 0..$num {
                             arr.push(it.next().expect("Length validated in guard; qed")?);
@@ -433,6 +433,7 @@ impl_fixed_types!(15);
 impl_fixed_types!(16);
 impl_fixed_types!(32);
 impl_fixed_types!(64);
+impl_fixed_types!(80);
 impl_fixed_types!(128);
 impl_fixed_types!(256);
 impl_fixed_types!(512);

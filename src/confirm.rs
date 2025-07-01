@@ -78,6 +78,7 @@ async fn send_transaction_with_confirmation_<T: Transport>(
         .transaction_receipt(hash)
         .await?
         .expect("receipt can't be null after wait for confirmations; qed");
+
     Ok(receipt)
 }
 
@@ -135,6 +136,8 @@ mod tests {
             condition: None,
             transaction_type: None,
             access_list: None,
+            max_fee_per_gas: None,
+            max_priority_fee_per_gas: None,
         };
 
         let transaction_receipt = TransactionReceipt {
@@ -142,6 +145,8 @@ mod tests {
             transaction_index: U64::zero(),
             block_hash: Some(H256::zero()),
             block_number: Some(2.into()),
+            from: Address::from_low_u64_be(0x123),
+            to: Some(Address::from_low_u64_be(0x123)),
             cumulative_gas_used: 0.into(),
             gas_used: Some(0.into()),
             contract_address: None,
@@ -150,6 +155,8 @@ mod tests {
             root: Some(H256::zero()),
             logs_bloom: Default::default(),
             transaction_type: None,
+            effective_gas_price: Default::default(),
+            revert_reason: None,
         };
 
         let poll_interval = Duration::from_secs(0);
